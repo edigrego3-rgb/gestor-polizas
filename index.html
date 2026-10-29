@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0f172a" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Mis Pólizas" />
+  <title>Gestor de Pólizas y Vencimientos</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="stylesheet" href="styles.css" />
+  <!-- Librería SheetJS para leer y exportar archivos Excel (.xlsx, .xls, .csv) -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+  <!-- Cabecera fija -->
+  <header class="app-header">
+    <div class="header-top">
+      <div class="brand">
+        <span class="brand-icon">🛡️</span>
+        <div>
+          <h1>Mis Pólizas</h1>
+          <p id="header-subtitle">Control de Cartera y Vencimientos</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button id="btn-sync-quick" class="icon-btn" title="Sincronizar con GitHub" onclick="app.quickSync()">
+          ☁️
+        </button>
+        <button class="icon-btn" title="Nueva Póliza Manual" onclick="app.openNewPolicyModal()">
+          ➕
+        </button>
+      </div>
+    </div>
+
+    <!-- Filtro global por Compañía -->
+    <div class="company-bar">
+      <label for="global-company-filter">🏢 Compañía:</label>
+      <select id="global-company-filter" onchange="app.setCompanyFilter(this.value)">
+        <option value="TODAS">Todas las compañías</option>
+      </select>
+      <span id="active-date-badge" class="date-badge"></span>
+    </div>
+  </header>
+
+  <!-- Contenedor principal -->
+  <main class="app-main">
+    <!-- ==================== SECCIÓN 1: ALERTAS ==================== -->
+    <section id="tab-alertas" class="tab-content active">
+      <!-- Resumen rápido en tarjetas -->
+      <div class="kpi-grid">
+        <div class="kpi-card kpi-danger" onclick="app.filterAlertCategory('sin_renovar')">
+          <span class="kpi-num" id="kpi-sin-renovar">0</span>
+          <span class="kpi-label">🔴 Sin Renovar</span>
+        </div>
+        <div class="kpi-card kpi-urgent" onclick="app.filterAlertCategory('venc2')">
+          <span class="kpi-num" id="kpi-venc2">0</span>
+          <span class="kpi-label">🚨 2° Venc. Cuota</span>
+        </div>
+        <div class="kpi-card kpi-warning" onclick="app.filterAlertCategory('venc1')">
+          <span class="kpi-num" id="kpi-venc1">0</span>
+          <span class="kpi-label">🟠 1° Venc. Cuota</span>
+        </div>
+        <div class="kpi-card kpi-info" onclick="app.filterAlertCategory('por_vencer')">
+          <span class="kpi-num" id="kpi-por-vencer">0</span>
+          <span class="kpi-label">🟡 Pólizas x Vencer</span>
+        </div>
+      </div>
+
+      <!-- Selector de categoría de alerta -->
+      <div class="pill-tabs" id="alert-category-tabs">
+        <button class="pill active" data-cat="todas" onclick="app.filterAlertCategory('todas')">Todas</button>
+        <button class="pill" data-cat="sin_renovar" onclick="app.filterAlertCategory('sin_renovar')">🔴 Sin Renovar</button>
+        <button class="pill" data-cat="venc2" onclick="app.filterAlertCategory('venc2')">🚨 2° Vencimiento</button>
+        <button class="pill" data-cat="venc1" onclick="app.filterAlertCategory('venc1')">🟠 1° Vencimiento</button>
+        <button class="pill" data-cat="por_vencer" onclick="app.filterAlertCategory('por_vencer')">🟡 Fin Póliza</button>
+      </div>
+
+      <!-- Buscador rápido dentro de alertas -->
+      <div class="search-box compact">
+        <input type="search" id="alert-search" placeholder="🔎 Filtrar alertas por asegurado, patente o póliza..." oninput="app.renderAlerts()" />
+      </div>
+
+      <div id="alerts-container" class="cards-list"></div>
+    </section>
+
+    <!-- ==================== SECCIÓN 2: CARTERA DE PÓLIZAS ==================== -->
+    <section id="tab-polizas" class="tab-content">
+      <div class="search-box">
+        <input type="search" id="policy-search" placeholder="🔍 Buscar por Apellido, DNI, Patente, Póliza o Concepto..." oninput="app.renderPolicies()" />
+      </div>
+
+      <div class="pill-tabs">
+        <button class="pill active" data-st="TODAS" onclick="app.setPolicyStatusFilter('TODAS')">Todas</button>
+        <button class="pill" data-st="VIGENTES" onclick="app.setPolicyStatusFilter('VIGENTES')">🟢 Vigentes</button>
+        <button class="pill" data-st="SIN_RENOVAR" onclick="app.setPolicyStatusFilter('SIN_RENOVAR')">🔴 Sin Renovar</button>
+        <button class="pill" data-st="POR_VENCER" onclick="app.setPolicyStatusFilter('POR_VENCER')">🟡 Por Vencer</button>
+        <button class="pill" data-st="RENOVADAS" onclick="app.setPolicyStatusFilter('RENOVADAS')">🔄 Renovadas</button>
+        <button class="pill" data-st="BAJAS" onclick="app.setPolicyStatusFilter('BAJAS')">❌ Bajas</button>
+      </div>
+
+      <div class="list-summary" id="policies-count-bar">Mostrando 0 pólizas</div>
+      <div id="policies-container" class="cards-list"></div>
+    </section>
+
+    <!-- ==================== SECCIÓN 3: CARGAR / IMPORTAR EXCEL ==================== -->
+    <section id="tab-importar" class="tab-content">
+      <div class="panel-card">
+        <h2>📥 Importar Excel o CSV de Compañías</h2>
+        <p class="helper-text">
+          Cargá listados de <strong>La Segunda, Sancor, Federación Patronal, San Cristóbal, Rivadavia, RUS</strong> o cualquier aseguradora en formato <code>.xlsx</code>, <code>.xls</code> o <code>.csv</code>.
+        </p>
+
+        <div class="form-group">
+          <label>1. ¿De qué compañía es el listado?</label>
+          <div class="row-gap">
+            <select id="import-company-select" onchange="app.onImportCompanyChange(this.value)">
+              <option value="La Segunda">La Segunda</option>
+              <option value="Sancor Seguros">Sancor Seguros</option>
+              <option value="Federación Patronal">Federación Patronal</option>
+              <option value="San Cristóbal">San Cristóbal</option>
+              <option value="Rivadavia">Seguros Rivadavia</option>
+              <option value="Mercantil Andina">Mercantil Andina</option>
+              <option value="Río Uruguay (RUS)">Río Uruguay (RUS)</option>
+              <option value="Triunfo Seguros">Triunfo Seguros</option>
+              <option value="ATM Seguros">ATM Seguros</option>
+              <option value="OTRA">➕ Otra compañía (escribir nombre)...</option>
+            </select>
+          </div>
+          <input type="text" id="import-company-custom" class="mt-8 hidden" placeholder="Escribí el nombre de la compañía..." />
+        </div>
+
+        <div class="form-group">
+          <label>2. ¿Qué contiene el archivo Excel?</label>
+          <select id="import-mode-select">
+            <option value="polizas">📋 Listado de Pólizas (detecta renovaciones y genera/lee cuotas)</option>
+            <option value="cuotas">💳 Listado de Cuotas y Vencimientos (1° y 2° vencimiento por póliza)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label>3. Seleccioná tu archivo Excel (<code>.xlsx</code>, <code>.xls</code>) o <code>.csv</code></label>
+          <input type="file" id="excel-file-input" accept=".xlsx,.xls,.csv" onchange="app.handleFileSelect(event)" class="file-input" />
+        </div>
+
+        <!-- Mapeador de columnas dinámico (aparece al elegir archivo) -->
+        <div id="column-mapper-box" class="mapper-box hidden">
+          <h3>🧭 Vincular Columnas del Excel</h3>
+          <p class="helper-text">Verificá qué columna de tu Excel corresponde a cada dato. El sistema guardará este formato para esta compañía.</p>
+          <div id="mapper-fields" class="mapper-grid"></div>
+          <div class="form-actions">
+            <button class="btn btn-primary btn-block" onclick="app.confirmExcelImport()">
+              ✅ Procesar e Importar Datos
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel-card">
+        <h3>📄 Plantilla Excel Estándar</h3>
+        <p class="helper-text">
+          Si querés armar tu propio Excel con pólizas y cuotas de cualquier compañía para subirlo directo, descargá esta plantilla modelo:
+        </p>
+        <div class="btn-row">
+          <button class="btn btn-secondary" onclick="app.downloadTemplateExcel('polizas')">
+            ⬇️ Plantilla de Pólizas (.xlsx)
+          </button>
+          <button class="btn btn-secondary" onclick="app.downloadTemplateExcel('cuotas')">
+            ⬇️ Plantilla de Cuotas (.xlsx)
+          </button>
+        </div>
+      </div>
+
+      <div class="panel-card">
+        <h3>➕ Carga Manual Rápida</h3>
+        <p class="helper-text">¿Emitiste una póliza recién y querés cargarla a mano sin Excel?</p>
+        <button class="btn btn-primary btn-block" onclick="app.openNewPolicyModal()">
+          ➕ Cargar Nueva Póliza Manualmente
+        </button>
+      </div>
+    </section>
+
+    <!-- ==================== SECCIÓN 4: AJUSTES Y SINCRONIZACIÓN ==================== -->
+    <section id="tab-ajustes" class="tab-content">
+      <div class="panel-card">
+        <h2>⏰ Tus Tiempos de Alerta</h2>
+        <p class="helper-text">Elegí con cuántos días de anticipación querés que te avise el celular o la tablet:</p>
+
+        <div class="form-group">
+          <label>🟡 Aviso previo de <strong>Vencimiento de Póliza</strong> (días antes de <code>Vig. Hasta</code>):</label>
+          <input type="number" id="cfg-dias-poliza" min="1" max="60" />
+        </div>
+
+        <div class="form-group">
+          <label>🟠 Aviso previo de <strong>1° Vencimiento de Cuota</strong> (días antes):</label>
+          <input type="number" id="cfg-dias-venc1" min="0" max="30" />
+        </div>
+
+        <div class="form-group">
+          <label>🚨 Aviso previo de <strong>2° Vencimiento de Cuota</strong> (días antes):</label>
+          <input type="number" id="cfg-dias-venc2" min="0" max="30" />
+        </div>
+
+        <div class="form-group">
+          <label>📅 Días por defecto entre el <strong>1° y el 2° Vencimiento</strong> (al generar cuotas):</label>
+          <input type="number" id="cfg-gap-venc2" min="1" max="31" />
+        </div>
+
+        <button class="btn btn-primary btn-block" onclick="app.saveSettings()">
+          💾 Guardar Mis Preferencias
+        </button>
+      </div>
+
+      <div class="panel-card">
+        <h2>☁️ Sincronizar Celular y Tablet (GitHub)</h2>
+        <p class="helper-text">
+          Conectá tu repositorio de GitHub para que los pagos, cuotas y renovaciones que cargues en el celular aparezcan automáticamente en la tablet (y viceversa).
+        </p>
+
+        <div class="form-group">
+          <label>Usuario de GitHub (ej: <code>juanperez</code>):</label>
+          <input type="text" id="gh-owner" placeholder="Tu usuario de GitHub" />
+        </div>
+        <div class="form-group">
+          <label>Nombre del Repositorio (ej: <code>gestor-polizas</code>):</label>
+          <input type="text" id="gh-repo" placeholder="gestor-polizas" />
+        </div>
+        <div class="form-group">
+          <label>Rama (Branch):</label>
+          <input type="text" id="gh-branch" placeholder="main" value="main" />
+        </div>
+        <div class="form-group">
+          <label>Token Personal de GitHub (PAT con permiso <code>repo</code> o <code>contents</code>):</label>
+          <input type="password" id="gh-token" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx" />
+        </div>
+        <div class="form-group checkbox-row">
+          <input type="checkbox" id="gh-autosync" />
+          <label for="gh-autosync">Sincronizar automáticamente al guardar cambios</label>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn btn-primary" onclick="app.saveGitHubConfig()">💾 Guardar Conexión</button>
+          <button class="btn btn-secondary" onclick="app.pushToGitHub()">⬆️ Subir a la Nube</button>
+          <button class="btn btn-secondary" onclick="app.pullFromGitHub()">⬇️ Traer de la Nube</button>
+        </div>
+        <p id="gh-sync-status" class="sync-status"></p>
+      </div>
+
+      <div class="panel-card">
+        <h2>📦 Copia de Seguridad en Archivo</h2>
+        <p class="helper-text">Descargá toda tu cartera (pólizas, cuotas, pagos y renovaciones) a un archivo Excel o JSON, o restaurala cuando quieras.</p>
+        <div class="btn-row">
+          <button class="btn btn-secondary" onclick="app.exportFullExcel()">📊 Exportar Todo a Excel</button>
+          <button class="btn btn-secondary" onclick="app.exportBackupJson()">💾 Descargar Respaldo (.json)</button>
+        </div>
+        <div class="form-group mt-12">
+          <label>Restaurar desde archivo <code>.json</code>:</label>
+          <input type="file" accept=".json" onchange="app.importBackupJson(event)" class="file-input" />
+        </div>
+        <hr class="divider" />
+        <button class="btn btn-danger-outline btn-block" onclick="app.resetToFactory()">
+          🔄 Restaurar Listado Original de Fábrica (454 pólizas)
+        </button>
+      </div>
+    </section>
+  </main>
+
+  <!-- Barra de navegación inferior para celular/tablet -->
+  <nav class="bottom-nav">
+    <button class="nav-item active" data-tab="tab-alertas" onclick="app.switchTab('tab-alertas')">
+      <span class="nav-icon">🔔<span id="nav-badge-alertas" class="nav-badge">0</span></span>
+      <span class="nav-label">Alertas</span>
+    </button>
+    <button class="nav-item" data-tab="tab-polizas" onclick="app.switchTab('tab-polizas')">
+      <span class="nav-icon">🗂️</span>
+      <span class="nav-label">Pólizas</span>
+    </button>
+    <button class="nav-item" data-tab="tab-importar" onclick="app.switchTab('tab-importar')">
+      <span class="nav-icon">📥</span>
+      <span class="nav-label">Cargar Excel</span>
+    </button>
+    <button class="nav-item" data-tab="tab-ajustes" onclick="app.switchTab('tab-ajustes')">
+      <span class="nav-icon">⚙️</span>
+      <span class="nav-label">Ajustes</span>
+    </button>
+  </nav>
+
+  <!-- ==================== MODAL 1: FICHA DE PÓLIZA Y CUOTAS ==================== -->
+  <div id="modal-policy" class="modal-overlay hidden">
+    <div class="modal-sheet">
+      <div class="modal-header">
+        <div>
+          <span id="det-company-badge" class="badge-company">La Segunda</span>
+          <h2 id="det-nombre">Nombre del Asegurado</h2>
+        </div>
+        <button class="close-btn" onclick="app.closeModal('modal-policy')">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <!-- Estado actual y acciones principales -->
+        <div class="status-banner" id="det-status-banner">
+          <div>
+            <strong id="det-status-text">Vigente</strong>
+            <div id="det-status-sub" class="small-text"></div>
+          </div>
+          <div class="status-actions" id="det-status-actions"></div>
+        </div>
+
+        <!-- Datos de visualización de la póliza -->
+        <div class="detail-grid">
+          <div class="detail-item">
+            <span class="detail-label">Póliza N°</span>
+            <span class="detail-val" id="det-poliza">-</span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">DNI / CUIT</span>
+            <span class="detail-val" id="det-dni">-</span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">Ramo (SR)</span>
+            <span class="detail-val" id="det-ramo">-</span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">Expediente / Sup.</span>
+            <span class="detail-val" id="det-expediente">-</span>
+          </div>
+          <div class="detail-item full-width">
+            <span class="detail-label">Concepto / Vehículo / Riesgo</span>
+            <span class="detail-val highlight" id="det-concepto">-</span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">Vigencia Desde</span>
+            <span class="detail-val" id="det-desde">-</span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">Vigencia Hasta</span>
+            <span class="detail-val" id="det-hasta">-</span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">Prima</span>
+            <span class="detail-val" id="det-prima">-</span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">Premio Total</span>
+            <span class="detail-val strong" id="det-premio">-</span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">Fecha Emisión</span>
+            <span class="detail-val" id="det-emision">-</span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">WhatsApp / Celular</span>
+            <div class="inline-input">
+              <input type="tel" id="det-telefono" placeholder="Ej: 3544556677" onchange="app.savePolicyContact()" />
+            </div>
+          </div>
+        </div>
+
+        <div class="form-group mt-8">
+          <label class="small-label">📝 Notas / Observaciones:</label>
+          <textarea id="det-observaciones" rows="2" placeholder="Anotaciones sobre esta póliza..." onchange="app.savePolicyContact()"></textarea>
+        </div>
+
+        <!-- SECCIÓN DE CUOTAS Y DOBLE VENCIMIENTO -->
+        <div class="cuotas-section">
+          <div class="section-header-row">
+            <h3>💳 Cuotas (1° y 2° Vencimiento)</h3>
+            <div class="btn-group-mini">
+              <button class="btn-mini" onclick="app.openAddQuotaModal()">➕ Cuota</button>
+              <button class="btn-mini" onclick="app.autoGenerateQuotasPrompt()">⚡ Autogenerar</button>
+            </div>
+          </div>
+          <p class="helper-text">Tocá cualquier fecha o monto para editarlo. Si la cuota sigue pendiente, el sistema te avisará tanto del <strong>1° Vencimiento</strong> como del <strong>2° Vencimiento</strong>.</p>
+          <div id="det-cuotas-list" class="cuotas-list"></div>
+        </div>
+
+        <hr class="divider" />
+        <div class="btn-row">
+          <button class="btn btn-secondary" onclick="app.openEditPolicyModal()">✏️ Editar Datos de Póliza</button>
+          <button class="btn btn-danger-outline" onclick="app.deleteCurrentPolicy()">🗑️ Eliminar Póliza</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== MODAL 2: CARGAR RENOVACIÓN ==================== -->
+  <div id="modal-renew" class="modal-overlay hidden">
+    <div class="modal-sheet">
+      <div class="modal-header">
+        <h2>🔄 Cargar Renovación de Póliza</h2>
+        <button class="close-btn" onclick="app.closeModal('modal-renew')">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="renew-old-summary" class="info-banner"></div>
+
+        <div class="form-group">
+          <label>Nuevo N° de Póliza:</label>
+          <input type="text" id="ren-poliza" placeholder="Ingresá el nuevo número de póliza" />
+        </div>
+        <div class="form-row-2">
+          <div class="form-group">
+            <label>Nueva Vigencia Desde:</label>
+            <input type="date" id="ren-desde" onchange="app.onRenewDateChange()" />
+          </div>
+          <div class="form-group">
+            <label>Nueva Vigencia Hasta:</label>
+            <input type="date" id="ren-hasta" onchange="app.onRenewDateChange()" />
+          </div>
+        </div>
+        <div class="form-row-2">
+          <div class="form-group">
+            <label>Nueva Prima ($):</label>
+            <input type="number" step="0.01" id="ren-prima" />
+          </div>
+          <div class="form-group">
+            <label>Nuevo Premio Total ($):</label>
+            <input type="number" step="0.01" id="ren-premio" oninput="app.onRenewDateChange()" />
+          </div>
+        </div>
+        <div class="form-row-2">
+          <div class="form-group">
+            <label>Cantidad de Cuotas:</label>
+            <input type="number" min="1" max="24" id="ren-cuotas-cant" value="3" onchange="app.onRenewDateChange()" />
+          </div>
+          <div class="form-group">
+            <label>Días entre 1° y 2° Venc.:</label>
+            <input type="number" min="1" max="30" id="ren-gap-venc2" value="10" onchange="app.onRenewDateChange()" />
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Vista previa de Cuotas (1° y 2° Vencimiento editables):</label>
+          <div id="ren-cuotas-preview" class="cuotas-list"></div>
+        </div>
+
+        <button class="btn btn-primary btn-block" onclick="app.confirmRenewal()">
+          ✅ Guardar Renovación y Marcar Anterior como Renovada
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== MODAL 3: NUEVA / EDITAR PÓLIZA MANUAL ==================== -->
+  <div id="modal-form-policy" class="modal-overlay hidden">
+    <div class="modal-sheet">
+      <div class="modal-header">
+        <h2 id="form-policy-title">➕ Nueva Póliza</h2>
+        <button class="close-btn" onclick="app.closeModal('modal-form-policy')">✕</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="fp-id" />
+        <div class="form-group">
+          <label>Compañía Aseguradora:</label>
+          <input type="text" id="fp-compania" list="companias-datalist" placeholder="Ej: La Segunda, Sancor, Federación..." />
+          <datalist id="companias-datalist">
+            <option value="La Segunda"></option>
+            <option value="Sancor Seguros"></option>
+            <option value="Federación Patronal"></option>
+            <option value="San Cristóbal"></option>
+            <option value="Rivadavia"></option>
+            <option value="Mercantil Andina"></option>
+            <option value="Río Uruguay (RUS)"></option>
+          </datalist>
+        </div>
+        <div class="form-row-2">
+          <div class="form-group">
+            <label>Apellido y Nombre / Razón Social:</label>
+            <input type="text" id="fp-nombre" placeholder="Ej: PEREZ, JUAN" />
+          </div>
+          <div class="form-group">
+            <label>DNI / CUIT:</label>
+            <input type="text" id="fp-dni" placeholder="Ej: 25123456" />
+          </div>
+        </div>
+        <div class="form-row-2">
+          <div class="form-group">
+            <label>N° de Póliza:</label>
+            <input type="text" id="fp-poliza" placeholder="Ej: 69550000" />
+          </div>
+          <div class="form-group">
+            <label>Ramo / SR:</label>
+            <input type="text" id="fp-sr" placeholder="Ej: 4 (Automotores)" />
+          </div>
+        </div>
+        <div class="form-row-2">
+          <div class="form-group">
+            <label>Patente (si es vehículo):</label>
+            <input type="text" id="fp-patente" placeholder="Ej: AB123CD" />
+          </div>
+          <div class="form-group">
+            <label>Expediente / Suplemento:</label>
+            <input type="text" id="fp-expediente" placeholder="Opcional" />
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Concepto / Descripción del Riesgo:</label>
+          <input type="text" id="fp-concepto" placeholder="Ej: AB123CD TOYOTA HILUX 2022" />
+        </div>
+        <div class="form-row-2">
+          <div class="form-group">
+            <label>Vigencia Desde:</label>
+            <input type="date" id="fp-desde" />
+          </div>
+          <div class="form-group">
+            <label>Vigencia Hasta:</label>
+            <input type="date" id="fp-hasta" />
+          </div>
+        </div>
+        <div class="form-row-2">
+          <div class="form-group">
+            <label>Prima ($):</label>
+            <input type="number" step="0.01" id="fp-prima" value="0" />
+          </div>
+          <div class="form-group">
+            <label>Premio Total ($):</label>
+            <input type="number" step="0.01" id="fp-premio" value="0" />
+          </div>
+        </div>
+        <div class="form-row-2" id="fp-auto-cuotas-row">
+          <div class="form-group">
+            <label>Cantidad de Cuotas:</label>
+            <input type="number" min="1" max="24" id="fp-cuotas-cant" value="3" />
+          </div>
+          <div class="form-group">
+            <label>Teléfono / WhatsApp:</label>
+            <input type="tel" id="fp-telefono" placeholder="Ej: 3544..." />
+          </div>
+        </div>
+
+        <button class="btn btn-primary btn-block" onclick="app.savePolicyForm()">
+          💾 Guardar Póliza
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== MODAL 4: AGREGAR CUOTA MANUAL ==================== -->
+  <div id="modal-add-quota" class="modal-overlay hidden">
+    <div class="modal-sheet compact-sheet">
+      <div class="modal-header">
+        <h2>➕ Cargar Cuota y Vencimientos</h2>
+        <button class="close-btn" onclick="app.closeModal('modal-add-quota')">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row-2">
+          <div class="form-group">
+            <label>N° de Cuota:</label>
+            <input type="number" id="aq-numero" min="1" value="1" />
+          </div>
+          <div class="form-group">
+            <label>Importe ($):</label>
+            <input type="number" step="0.01" id="aq-monto" value="0" />
+          </div>
+        </div>
+        <div class="form-row-2">
+          <div class="form-group">
+            <label>1° Vencimiento:</label>
+            <input type="date" id="aq-venc1" onchange="app.onAddQuotaVenc1Change()" />
+          </div>
+          <div class="form-group">
+            <label>2° Vencimiento:</label>
+            <input type="date" id="aq-venc2" />
+          </div>
+        </div>
+        <button class="btn btn-primary btn-block" onclick="app.saveAddedQuota()">
+          ✅ Guardar Cuota
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast de notificaciones -->
+  <div id="toast" class="toast hidden"></div>
+
+  <!-- Datos precargados y lógica principal -->
+  <script src="datos_iniciales.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
